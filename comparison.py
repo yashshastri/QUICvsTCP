@@ -15,48 +15,30 @@ tests = 5
 devnull = open(os.devnull, 'wb')
 spikelength = 2000
 
-# testfile stuff
-testFile = "index.html"
-testFilePath = "/var/www/html/" + testFile
-tmpFilePath = "./testfile"
-testFileQuicEssentials = "\"HTTP/1.1 200 OK\nX-Original-Url: https://www.example.org/\n\n\""
-testFileGenerationCommand = "dd if=/dev/urandom of=" + \
-	tmpFilePath + " bs=2M count=16 > /dev/null 2>&1"
-testFileQuicIntroCommand = "echo " + testFileQuicEssentials + " | sudo tee " + testFilePath + \
-	" > /dev/null && cat " + tmpFilePath + \
-	" | sudo tee --append " + testFilePath + " >/dev/null"
-
-testFileSize = 33554491
-
 # netem commands
-netemCommandDelete = "sudo tc qdisc del dev lo root"
-netemCommandShow = "sudo tc qdisc show dev lo"
+netemCommandDelete = "sudo tc qdisc del dev lo root" # delete any existing schedular
+netemCommandShow = "sudo tc qdisc show dev lo" #show details of packet queue
 netemCommandRoot = "sudo tc qdisc add dev lo root handle 1: netem "
+# set delay as passed in argument
 netemCommandLatencyAddendum = " delay xxxms"
-netemCommandLatencyVarianceAddendum = " xxxms distribution normal"
+# set loss percent passed in argument
 netemCommandPacketLossAddendum = " loss xxx%"
+# set the bandwidth passed as in argument
 netemCommandBandwidth = "sudo tc qdisc add dev lo parent 1: handle 2: tbf rate xxxmbit burst 256kbit latency 1000ms mtu 1500"
 
-
-# spike indicating ping command
-pingCommand = ["/bin/ping", "127.0.0.1", "-c", "1", "-s", "1"]
-
 # client commands
-tcpClientCommand = "wget -O ./tmp/index.html https://127.0.0.1/" + \
-	testFile + " --no-check-certificate"
-quicClientCommand = "/home/csg/software/proto-quic/src/out/Default/quic_client --host=127.0.0.1 --disable-certificate-verification --port=6121 https://www.example.org/ > ./tmp/download"
+tcpClientCommand = "wget -O ./tmp/index.html https://127.0.0.1/index.html --no-check-certificate"
+quicClientCommand = "/home/yash/software/proto-quic/src/out/Default/quic_client --host=127.0.0.1 --disable-certificate-verification --port=6121 https://www.example.org/ > ./tmp/download"
 quicChromiumCommand = "google-chrome --user-data-dir=/tmp/chrome-profile --no-proxy-server --enable-quic --origin-to-force-quic-on=www.example.org:443 --host-resolver-rules='MAP www.example.org:443 127.0.0.1:6121' https://www.example.org/"
-quicChromiumDownloadFilepath = "/home/csg/Downloads/download"
+quicChromiumDownloadFilepath = "/home/yash/Downloads/download"
 
 # tcpdump commands
 pcapTouch = "touch /tmp/test.pcap"
 tcpdumpCapture = ["/usr/bin/sudo", "/usr/sbin/tcpdump",
 				  "-i", "lo", "-w", "/tmp/test.pcap"]
 tcpdumpCaptureKill = "sudo kill "
+# to convert pcap file into txt file
 tcpdumpAnalyze = "tcpdump -r /tmp/test.pcap -tttttnnqv > xxx 2>/dev/null"
-tcpdumpSpikeFile = "/tmp/tcpdump.tmp"
-tcpdumpSpikeAnalyze = "tcpdump -r /tmp/test.pcap -ttnnqv > " + \
-	tcpdumpSpikeFile + " 2>/dev/null"
 
 
 def main():
@@ -68,8 +50,6 @@ def main():
 		0, 51)], help="Packet loss as the probability an individual packet will be dropped", default="0")
 	parser.add_argument("-d", "--delay", nargs="+", type=int,
 						choices=range(10, 126), help="Mean delay (in ms)", default="10")
-	parser.add_argument("-v", "--variance", nargs="+", type=int,
-						choices=range(0, 51), help="Delay variance (in ms)", default="0")
 	parser.add_argument("-b", "--bandwidth", nargs="+", type=int,
 						choices=range(1, 101), help="Bandwidth (in Mbps)", default="100")
 	parser.add_argument("-s", "--spikedelay", nargs="+", type=int, choices=range(0, 31),
@@ -83,11 +63,10 @@ def main():
 	args = parser.parse_args()
 
 	class params:
-		def __init__(self, protocol, packetloss, delay, variance, bandwidth, spikedelay):
+		def __init__(self, protocol, packetloss, delay, bandwidth, spikedelay):
 			self.protocol = protocol
 			self.packetloss = packetloss
 			self.delay = delay
-			self.variance = variance
 			self.bandwidth = bandwidth
 			self.spikedelay = spikedelay
 			self.spikelength = spikelength
@@ -100,8 +79,6 @@ def main():
 		args.packetloss = [args.packetloss]
 	if not isinstance(args.delay, collections.Iterable):
 		args.delay = [args.delay]
-	if not isinstance(args.variance, collections.Iterable):
-		args.variance = [args.variance]
 	if not isinstance(args.bandwidth, collections.Iterable):
 		args.bandwidth = [args.bandwidth]
 	if not isinstance(args.spikedelay, collections.Iterable):
@@ -110,42 +87,10 @@ def main():
 	for protocol in args.protocol:
 		for packetloss in args.packetloss:
 			for delay in args.delay:
-				for variance in args.variance:
-					if variance >= delay:
-						continue
-					for bandwidth in args.bandwidth:
-						for spikedelay in args.spikedelay:
-							paramsQueue.append(
-								params(protocol, packetloss, delay, variance, bandwidth, spikedelay))
-
-
-	# check test file
-	def checkTestFile():
-		if not os.path.isfile(testFilePath):
-			return False
-		if os.path.getsize(testFilePath) != testFileSize:
-			return False
-
-		return True
-
-	# create the test file
-
-	def generateTestFile():
-		if args.verbose or args.vverbose:
-			print "Generating test file..."
-		retCode = os.system(testFileGenerationCommand)
-		retCode2 = os.system(testFileQuicIntroCommand)
-
-		if (retCode != 0) or (retCode2 != 0) or (not checkTestFile()):
-			print >>sys.stderr, "Test file generation error (" + str(
-				retCode) + ")."
-			exit()
-
-		#os.system("sudo cp -f " + testFilePath + " /var/www/html/");
-
-		if args.verbose or args.vverbose:
-			print "Test file created."
-		return
+				for bandwidth in args.bandwidth:
+					for spikedelay in args.spikedelay:
+						paramsQueue.append(
+							params(protocol, packetloss, delay, bandwidth, spikedelay))
 
 	# configure netem
 
@@ -153,9 +98,6 @@ def main():
 
 		netemCommandConfigTmp = netemCommandRoot + \
 			netemCommandLatencyAddendum.replace("xxx", str(params.delay))
-		if params.variance > 0:
-			netemCommandConfigTmp += netemCommandLatencyVarianceAddendum.replace(
-				"xxx", str(params.variance))
 		if params.packetloss > 0:
 			netemCommandConfigTmp += netemCommandPacketLossAddendum.replace(
 				"xxx", str(params.packetloss))
@@ -185,7 +127,6 @@ def main():
 		ret += "_" + str(params.bandwidth)
 		ret += "_" + str(params.packetloss)
 		ret += "_" + str(params.delay)
-		ret += "_" + str(params.variance)
 		if params.spikedelay > 0:
 			ret += "_" + str(params.relspikestart)
 		else:
@@ -211,22 +152,11 @@ def main():
 		if args.vverbose:
 			print "Analyzing pcap file..."
 
-		if params.spikedelay > 0:
-			os.system(tcpdumpSpikeAnalyze)
-			mfile = open(tcpdumpSpikeFile)
-			params.relspikestart = params.spikestart - \
-				float(mfile.readline().split()[0])
-			mfile.close()
-
 		outputName = getOutputFilename(testIndex, params)
 
 		os.system(tcpdumpAnalyze.replace("xxx", "./raw/"+ str(outputName)))
 
 		return
-
-	# create the test file if it does not already exist
-	if not checkTestFile():
-		generateTestFile()
 
 	# run the tests for all params files
 
@@ -234,7 +164,7 @@ def main():
 		params = paramsQueue.pop()
 
 		if args.verbose:
-			print "Running tests for: protocol=" + str(params.protocol) + ", packetloss=" + str(params.packetloss) + ", delay=" + str(params.delay) + ", variance=" + str(params.variance) + ", bandwidth=" + str(params.bandwidth) + ", spikedelay=" + str(params.spikedelay) + "."
+			print "Running tests for: protocol=" + str(params.protocol) + ", packetloss=" + str(params.packetloss) + ", delay=" + str(params.delay) + ", bandwidth=" + str(params.bandwidth) + ", spikedelay=" + str(params.spikedelay) + "."
 
 		# configure netem
 		netemConfig(params)
